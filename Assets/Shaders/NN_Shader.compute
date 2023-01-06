@@ -1,0 +1,49 @@
+#pragma kernel ComputeOutputs
+
+StructuredBuffer<float> weights;
+StructuredBuffer<float> bias;
+StructuredBuffer<float> inputs;
+StructuredBuffer<int> structure;
+RWStructuredBuffer<float> outputs;
+RWStructuredBuffer<float> valuesBuffer;
+RWStructuredBuffer<float> previousBuffer;
+
+const int w_l, b_l, s_l, o_l, i_l; // lengths of Weights (w), Inputs (i), Bias (b), Structure (s), Outputs (o) and Layer Inputs (c)
+int pv_l, v_l;
+// Set x-attribute to amount of output nodes / drone rotors
+// TODO: Python script that automatically does that
+[numthreads(1, 1, 1)]
+void ComputeOutputs(int id:SV_DispatchThreadID){
+    int RecentLayerWeights = 0;
+    int biasIndex = 0;
+    int node, value, layer, weight, weightIndex;
+    for(layer=0; layer<s_l; layer++){
+
+        if(layer>0){
+            pv_l = structure[layer-1];
+            for(node=0; node<structure[layer-1]; node++)
+                previousBuffer[node] = valuesBuffer[node];
+            v_l = structure[layer];
+            for(node=0; node<structure[layer]; node++){
+                value = 0;
+                for(weight=0; weight<structure[layer-1]; weight++){
+                    weightIndex = node+(structure[layer]*weight)+RecentLayerWeights;
+                    value += previousBuffer[weight]*weights[weightIndex];
+                }
+                value += bias[biasIndex];
+                biasIndex++;
+                valuesBuffer[node] = value;
+            } 
+            RecentLayerWeights += structure[layer]*structure[layer-1];
+        } else{
+            v_l = i_l;
+            for(node=0; node<i_l; node++)
+                valuesBuffer[node] = inputs[node];
+        }
+
+
+        if(layer==s_l-1)
+            for(node=0; node<o_l; node++)
+                outputs[node] = valuesBuffer[node];
+    }
+}

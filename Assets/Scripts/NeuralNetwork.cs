@@ -1,101 +1,121 @@
-using System.Collections;
+ using System.Collections;
 using System.Collections.Generic;
+using System.Windows;
+using System.Linq;
 using UnityEngine;
 public class NeuralNetwork
 {
-    /*
-    General Concept:
-        Each Neural Network is an instance of this class. They are simple feedforward networks. Each NN has
-            - 'm' input nodes 'Iₘ' (n is described by the variable "InputNodesAmount")
-            - 'n' output nodes 'Oₙ' (m is described by the variable "OutputNodesAmount")
-            - 'o' hidden Network 'Hₒ' (o is described by the variable "HiddenLayerAmount") with 'Hₒ,ₐ' nodes (neurons) and 'Hₒ
-            - 'w' := m * H₁,ₐ + ... + Hₒ₋₁,ₐ * Hₒ,ₐ weights
-    */
-    public ComputeShader ComShad;
-    private ComputeBuffer WeightsBuffer, ValuesBuffer, BiasBuffer;
+    [SerializeField]
+    private ComputeShader GPU;
+    private ComputeBuffer WeightsBuffer, InputsBuffer, BiasBuffer, OutputsBuffer,
+        StructureBuffer, layerInputsBuffer, ValuesBuffer, PreviousValuesBuffer;
 
-    public float[][] Values; // (0) Layer; (1) Node
-    public float[][][] Weights; // (0) Layer; (1) Node; (2) n-th Weight
-    public float[][] Bias; // (0) Layer; (1) Node;
-    private int WeightsAmount, ValuesAmount;
+    private float[] Weights, Bias, Output;
+    private int[] Structure;
 
-    private void Initialize(){
+    int maxElement(int[] a){
+        int max=0;
+        for(int i=0; i<a.Length; i++)
+            if(a[i]>max)
+                max = a[i];
+
+        return max;
+    }
+
+    public float[] GetWeights(){return Weights;}
+    public float[] GetBias(){return Bias;}
+
+    private void initializeBuffers(){
+        GPU = Controller.Instance.ComShad;
+
+        Output = new float[Structure[Structure.Length-1]];
+
+        WeightsBuffer = new ComputeBuffer(Weights.Length, sizeof(float));
+        BiasBuffer = new ComputeBuffer(Bias.Length, sizeof(float));
+        InputsBuffer = new ComputeBuffer(Structure[0], sizeof(float));
+        StructureBuffer = new ComputeBuffer(Structure.Length, sizeof(int));
+        OutputsBuffer = new ComputeBuffer(Structure[Structure.Length-1], sizeof(float));
+        ValuesBuffer = new ComputeBuffer(maxElement(Structure), sizeof(float));
+        PreviousValuesBuffer = new ComputeBuffer(maxElement(Structure), sizeof(float));
+
+        GPU.SetBuffer(0, Shader.PropertyToID("weights"), WeightsBuffer);
+        GPU.SetBuffer(0, Shader.PropertyToID("bias"), BiasBuffer);
+        GPU.SetBuffer(0, Shader.PropertyToID("inputs"), InputsBuffer);
+        GPU.SetBuffer(0, Shader.PropertyToID("structure"), StructureBuffer);
+        GPU.SetBuffer(0, Shader.PropertyToID("outputs"), OutputsBuffer);
+        GPU.SetBuffer(0, Shader.PropertyToID("valuesBuffer"), ValuesBuffer);
+        GPU.SetBuffer(0, Shader.PropertyToID("previousBuffer"), PreviousValuesBuffer);
+
+        WeightsBuffer.SetData(Weights);
+        BiasBuffer.SetData(Bias);
+        StructureBuffer.SetData(Structure);
+        ValuesBuffer.SetData(new int[maxElement(Structure)]);
+        PreviousValuesBuffer.SetData(new int[maxElement(Structure)]);
+
+        GPU.SetInt(Shader.PropertyToID("w_l"), Weights.Length);
+        GPU.SetInt(Shader.PropertyToID("i_l"), Structure[0]);
+        GPU.SetInt(Shader.PropertyToID("b_l"), Bias.Length);
+        GPU.SetInt(Shader.PropertyToID("s_l"), Structure.Length);
+        GPU.SetInt(Shader.PropertyToID("o_l"), Structure[Structure.Length-1]);
+    }
+ 
+    public NeuralNetwork(int[] structure){ // Used for 1st generation drones
         System.Random Dice = new System.Random();
-        for(int Layer=1; Layer<Values.Length; Layer++){
-            for(int Node=0; Node<Values[Layer].Length; Node++){
-                Values[Layer][Node] = 0;
-                ValuesAmount++;
-                Bias[Layer][Node] = (float)Dice.NextDouble()*2.5f-1.25f;
-                for(int Weight=0; Weight<Values[Layer-1].Length; Weight++){
-                    Weights[Layer][Node][Weight] = (float)Dice.NextDouble()*2.5f-1.25f;
-                    WeightsAmount++;
-                }
-            }
+        // Generate Weights and Bias
+        // Calculate amount of weights and bias
+        ushort weightAmount = 0;
+        ushort biasAmount = 0;
+        for(byte Layer=1; Layer<structure.Length; Layer++){
+            weightAmount += (ushort)(structure[Layer] * structure[Layer-1]);
+            biasAmount += (ushort) structure[Layer];
         }
+
+        // Initializing and filling Weights array
+        Weights = new float[weightAmount];
+        for(ushort weight=0; weight<weightAmount; weight++){
+            Weights[weight] = (float)Dice.NextDouble()-0.5f; // Weights are initialized between -.5 and .5
+        }
+
+        // Initializing and filling Bias array
+        Bias = new float[biasAmount];
+        for(ushort biasIndex=0; biasIndex<biasAmount; biasIndex++)
+            Bias[biasIndex] = (float)Dice.NextDouble()-0.5f;
+
+        this.Output = new float[structure[structure.Length-1]];
+
+        initializeBuffers();
     }
 
-    public NeuralNetwork(int[] Structure){
-        Values = new float[Structure.Length][];
-        Bias = new float[Structure.Length][];
-        Weights = new float[Structure.Length][][];
+    public NeuralNetwork(int[] structure, float[] weights, float[] bias){ // Used for later generation drones
+        this.Weights = weights;
+        this.Bias = bias;
+        this.Structure = structure;
+        this.Output = new float[structure[structure.Length-1]];
 
-        for(int Layer = 0; Layer<Structure.Length; Layer++){
-            Values[Layer] = new float[Structure[Layer]];
-            Bias[Layer] = new float[Structure[Layer]];
-            Weights[Layer] = new float[Structure[Layer]][];
-        }
-        for(int Layer = 1; Layer<Structure.Length; Layer++){
-            for(int Node=0; Node<Weights[Layer].Length; Node++){
-                Weights[Layer][Node] = new float[Structure[Layer-1]];
-            }
-        }
-        WeightsAmount = 0;
-        ValuesAmount = 0;
-        Initialize();
+        initializeBuffers();
     }
 
-    public NeuralNetwork(float[][] Values, float[][][] Weights, float[][] Bias){
-        ComShad = Controller.Instance.ComShad;
-        this.Values = Values;
-        this.Weights = Weights;
-        this.Bias = Bias; 
+    public float[] GetOutputs(float[] inputs){
+        InputsBuffer.SetData(inputs);
+        GPU.Dispatch(GPU.FindKernel("ComputeOutputs"), 1, 1, 1);
+        OutputsBuffer.GetData(Output);
+        Kill();
+        return Output;
     }
 
-    float DotProduct(float[] a, float[] b){
-        if(a.Length != b.Length) throw new System.Exception("Dot Product can only be calculated if both vectors length are equal");
-        float sum = 0;
-        for(int i=0; i<a.Length; i++){
-            sum += a[i] * b[i];
-        }
-        return sum;
+    public float[] CalculateOutputCPU(float[] input){
+        return new float[10];
     }
 
-    float ActivationFunction(float x){
-        return 1/(1+Mathf.Exp(-x));
-    }
-
-    public void SetInputs(float[] Inputs){
-        if(Inputs.Length != Values[0].Length) throw new System.Exception("Anzahl der Inputs stimmt nicht mit Größe des Inputlayers überein");
-        for(int Node=0; Node<Values[0].Length; Node++){
-            Values[0][Node] = Inputs[Node];
-        }
-    }
-
-    private void CalculateOutputs(){
-        for(int Layer=1; Layer<Values.Length; Layer++){
-            for(int Node=0; Node<Values[Layer].Length; Node++){
-                Values[Layer][Node] = this.DotProduct(Values[Layer-1], Weights[Layer][Node]) + Bias[Layer][Node];
-            }
-        }
-    }
-
-    public float[] GetOuputs(){
-        this.CalculateOutputs();
-        float[] Outputs = new float[Values[Values.Length-1].Length];
-        for(int Node=0; Node<Outputs.Length; Node++){
-            Outputs[Node] = ActivationFunction(Values[Outputs.Length][Node]); // Nur bei den Outputnodes oder überall die activation function?
-        }
-        return Outputs;
+    public void Kill(){
+        WeightsBuffer.Release();
+        BiasBuffer.Release();
+        InputsBuffer.Release();
+        OutputsBuffer.Release();
+        StructureBuffer.Release();
+        ValuesBuffer.Release();
+        PreviousValuesBuffer.Release();
     }
 
 }
+ 
